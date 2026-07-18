@@ -7,8 +7,8 @@ The prototype is deployed as a browser-ready demo and intentionally uses seeded,
 ## What is working now
 
 - Three representative companion conversations: acute distress, minor-plus-relationship boundary, and a clear control case.
-- A server endpoint that runs Crisis Sentinel, Boundary Guardian, and Attachment Lens in parallel, then asks Policy Recorder to produce the audit recommendation.
-- A deterministic risk reducer that chooses allow, hold for review, or block and escalate.
+- A server endpoint that runs deterministic demo keyword reviewers in parallel, then applies a documented policy reducer. It does not call an AI model.
+- A documented deterministic demo policy that chooses allow, hold for review, or block and escalate. The scores are scenario fixtures, not confidence or calibration.
 - A safety-review console that reveals reviewer findings, confidence, evidence, intervention recommendation, and audit event metadata.
 - A GitHub Actions build check and Vercel-ready Next.js app.
 
@@ -26,10 +26,12 @@ That is the 90/10 product. The real user can test whether the intervention is us
 
 This project is a product prototype, not a safety service.
 
-- Demo conversations are fictional and the review logic is intentionally simple.
+- Demo conversations are fictional and the review logic is intentionally simple keyword matching; it will miss real-world phrasing and context.
 - Do not use the displayed score as a diagnosis, a prediction of intent, or the sole basis for enforcement.
 - Any production crisis path requires locally appropriate resources, qualified human ownership, legal review, privacy controls, accessibility work, and continuous evaluation.
 - High-stakes actions must remain reviewable, reversible where possible, and policy-versioned.
+- Demo API inputs are validated and bounded, and the endpoint has a best-effort per-instance rate limit. This is hardening for a public demo, not production-grade abuse protection.
+- The displayed audit reference is not persisted. It exists only for the browser session.
 
 ## Architecture
 
@@ -40,7 +42,7 @@ This project is a product prototype, not a safety service.
         -> intervention and human-review queue
         -> tamper-evident audit event and evaluation telemetry
 
-The code implements the middle section with deterministic functions so the demo stays functional without secrets. The production replacement for a reviewer is a bounded service contract, not an unconstrained chat agent. See docs/PRODUCTION_PLAN.md for the end-to-end design.
+The code implements the middle section with deterministic keyword functions so the demo stays functional without secrets. The UI deliberately calls out that the result is not an AI detection, calibrated confidence, action, or persistent audit record. See docs/DEMO_POLICY.md for the exact fixture rules and docs/PRODUCTION_PLAN.md for the end-to-end design.
 
 ## YC and Steve Yegge operating model
 

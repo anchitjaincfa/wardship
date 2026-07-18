@@ -1,84 +1,92 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ScreeningInputError, screenConversation, validateScreeningInput } from "../../../lib/screening";
 
-type Message = { role: string; content: string; time?: string };
-type Finding = {
-  name: string; lens: string; status: "clear" | "watch" | "alert";
-  confidence: number; finding: string; evidence: string[]; score: number;
-};
+export const runtime = "nodejs";
+export const maxDuration = 5;
 
-const lower = (value: string) => value.toLowerCase();
-const includesAny = (value: string, terms: string[]) => terms.some((term) => value.includes(term));
-const evidence = (messages: Message[], terms: string[]) =>
-  messages.filter((message) => includesAny(lower(message.content), terms)).map((message) => message.content).slice(0, 2);
+const MAX_REQUEST_BYTES = 64 * 1024;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 12;
 
-async function crisis(messages: Message[]): Promise<Finding> {
-  const terms = ["disappear", "end it", "hurt myself", "kill myself", "not be here"];
-  const hits = evidence(messages, terms);
-  return hits.length ? {
-    name: "Crisis Sentinel", lens: "Self-harm and acute distress", status: "alert", confidence: 0.96, score: 82,
-    finding: "A high-severity distress signal needs an immediate, supportive safety path.", evidence: hits
-  } : {
-    name: "Crisis Sentinel", lens: "Self-harm and acute distress", status: "clear", confidence: 0.97, score: 0,
-    finding: "No direct acute-distress language was detected in this excerpt.", evidence: []
-  };
+type RateRecord = { count: number; resetAt: number };
+type RateLimitStore = typeof globalThis & { wardshipDemoRateLimit?: Map<string, RateRecord> };
+
+function rateLimitStore() {
+  const globalStore = globalThis as RateLimitStore;
+  if (!globalStore.wardshipDemoRateLimit) globalStore.wardshipDemoRateLimit = new Map();
+  return globalStore.wardshipDemoRateLimit;
 }
 
-async function boundary(messages: Message[], ageBand: string): Promise<Finding> {
-  const text = lower(messages.map((message) => message.content).join(" "));
-  const minor = ageBand.includes("16") || ageBand.includes("17") || includesAny(text, ["i am 16", "i'm 16", "i am 17", "i'm 17"]);
-  const terms = ["dating", "crush", "kiss", "romantic", "our secret"];
-  const hits = minor ? evidence(messages, terms) : [];
-  return hits.length ? {
-    name: "Boundary Guardian", lens: "Age and relationship boundaries", status: "alert", confidence: 0.94, score: 72,
-    finding: "A minor and relationship-coded content appear together. Hold the response.", evidence: hits
-  } : {
-    name: "Boundary Guardian", lens: "Age and relationship boundaries", status: "clear", confidence: 0.98, score: 0,
-    finding: "No age-plus-romance boundary signal was detected.", evidence: []
-  };
+function clientKey(request: NextRequest) {
+  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anonymous";
 }
 
-async function attachment(messages: Message[]): Promise<Finding> {
-  const terms = ["only one who understands", "do not need anyone else", "stay here with me", "keep this our secret"];
-  const hits = evidence(messages, terms);
-  return hits.length ? {
-    name: "Attachment Lens", lens: "Dependency and isolation", status: "alert", confidence: 0.89, score: 28,
-    finding: "The exchange includes language that can deepen exclusivity or isolation.", evidence: hits
-  } : {
-    name: "Attachment Lens", lens: "Dependency and isolation", status: "clear", confidence: 0.95, score: 0,
-    finding: "No exclusivity or dependency pattern was detected.", evidence: []
-  };
+function withinDemoRateLimit(key: string) {
+  const now = Date.now();
+  const store = rateLimitStore();
+
+  if (store.size > 256) {
+    for (const [storedKey, record] of store) {
+      if (record.resetAt <= now) store.delete(storedKey);
+    }
+  }
+
+  const record = store.get(key);
+  if (!record || record.resetAt <= now) {
+    store.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+  if (record.count >= RATE_LIMIT_MAX_REQUESTS) return false;
+
+  record.count += 1;
+  return true;
 }
 
-async function recorder(findings: Finding[]): Promise<Finding> {
-  const count = findings.filter((finding) => finding.status === "alert").length;
-  return {
-    name: "Policy Recorder", lens: "Decision evidence", status: count ? "watch" : "clear",
-    confidence: count ? 0.92 : 0.99, score: 0,
-    finding: count ? "Record the intervention, policy version, and reviewer disposition for later audit." : "Record the allow decision with screening metadata.",
-    evidence: count ? [String(count) + " policy signal(s) in one conversation"] : []
-  };
+function jsonError(error: string, status: number) {
+  return NextResponse.json({ error }, {
+    status,
+    headers: { "Cache-Control": "no-store" }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json();
-  const messages: Message[] = Array.isArray(body.messages) ? body.messages : [];
-  const ageBand = typeof body.ageBand === "string" ? body.ageBand : "unknown";
-  if (!messages.length) return NextResponse.json({ error: "messages must be a non-empty array" }, { status: 400 });
+  try {
+    const declaredLength = Number(request.headers.get("content-length") || "0");
+    if (declaredLength > MAX_REQUEST_BYTES) {
+      return jsonError("Request exceeds the demo size limit.", 413);
+    }
+    if (!request.headers.get("content-type")?.includes("application/json")) {
+      return jsonError("Content-Type must be application/json.", 415);
+    }
+    if (!withinDemoRateLimit(clientKey(request))) {
+      return jsonError("Demo rate limit exceeded. Try again in a minute.", 429);
+    }
 
-  const firstPass = await Promise.all([crisis(messages), boundary(messages, ageBand), attachment(messages)]);
-  const findings = [...firstPass, await recorder(firstPass)];
-  const riskScore = Math.min(100, firstPass.reduce((total, finding) => total + finding.score, 0));
-  const posture = riskScore >= 80 ? "block_and_escalate" : riskScore >= 40 ? "hold_for_review" : "allow";
-  const intervention = posture === "block_and_escalate"
-    ? { title: "Pause the companion response and route to crisis support", summary: "Do not continue unreviewed. Show a supportive, localizable safety flow and create a human-review case.", action: "Open a human-reviewed safety flow" }
-    : posture === "hold_for_review"
-      ? { title: "Hold the next response for a safety reviewer", summary: "A policy boundary needs review before the companion continues.", action: "Create a reviewer case" }
-      : { title: "Allow the response and retain screening evidence", summary: "No high-risk pattern was detected. Continue monitoring for context changes.", action: "Record allow decision" };
+    const rawBody = await request.text();
+    if (new TextEncoder().encode(rawBody).byteLength > MAX_REQUEST_BYTES) {
+      return jsonError("Request exceeds the demo size limit.", 413);
+    }
 
-  return NextResponse.json({
-    runId: "WRD-" + Date.now().toString(36).toUpperCase(), generatedAt: new Date().toISOString(),
-    riskScore, posture, intervention,
-    agents: findings.map(({ score, ...finding }) => finding),
-    audit: { eventId: "evt_" + crypto.randomUUID(), policyVersion: "companion-safety-v0.1", retention: "Demo data only" }
-  });
+    let body: unknown;
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      return jsonError("Request body must be valid JSON.", 400);
+    }
+
+    const input = validateScreeningInput(body);
+    const result = await screenConversation(input);
+
+    return NextResponse.json(result, {
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Wardship-Demo": "keyword-heuristic-only"
+      }
+    });
+  } catch (error) {
+    if (error instanceof ScreeningInputError) {
+      return jsonError(error.message, 400);
+    }
+    return jsonError("Demo screening could not be completed.", 500);
+  }
 }
