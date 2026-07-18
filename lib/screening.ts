@@ -149,7 +149,7 @@ async function boundaryGuardian(messages: ConversationMessage[], ageBand: Screen
 }
 
 async function attachmentLens(messages: ConversationMessage[]): Promise<ScreeningFinding> {
-  const terms = ["only one who understands", "do not need anyone else", "stay here with me", "keep this our secret"];
+  const terms = ["only one who understands", "do not need anyone else", "stay here with me"];
   const evidence = matchingEvidence(messages, terms);
   const matched = evidence.length > 0;
 
